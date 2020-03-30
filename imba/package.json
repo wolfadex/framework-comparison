@@ -1,0 +1,22 @@
+{
+  "name": "imba",
+  "version": "1.0.0",
+  "description": "Todo app in Imba",
+  "scripts": {
+    "dev": "webpack-dev-server",
+    "build": "webpack --mode=production"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "css-loader": "^3.4.2",
+    "html-webpack-plugin": "^4.0.3",
+    "imba": "^1.5.2",
+    "prettier": "^2.0.2",
+    "webpack": "^4.42.1",
+    "webpack-cli": "^3.3.11",
+    "webpack-dev-server": "^3.10.3"
+  },
+  "dependencies": {
+    "style-loader": "^1.1.3"
+  }
+}
