@@ -1,7 +1,9 @@
 import karax / [vdom, karax, karaxdsl, jstrutils, compact, localstorage]
 import options
 import sequtils
-from sequtils import filter
+import times, os
+
+func jslog(argument: cstring) {.importjs: """ console.log(#) """.}
 
 type
   Filter = enum
@@ -12,37 +14,49 @@ type
   Todo* = object
     content*: cstring
     completed: bool
-    uuid: int
+    uuid: int64
 
 var
   selectedEntry = -1
-  filter: Filter
+  todoFilter: Filter
   entriesLen: int
   doneswitch = true
   todos: seq[Todo] = @[]
 const
   contentSuffix = cstring"content"
-  completedSuffix = cstring"completed"
-  lenSuffix = cstring"entriesLen"
   todoKey = cstring"wolfadex__fc__nim-karax__todo"
 
-proc getEntryContent(pos: int): cstring =
-  result = getItem(&pos & contentSuffix)
-  if result == cstring"null":
-    result = nil
 
-proc isCompleted(pos: int): bool =
-  var value = getItem(&pos & completedSuffix)
-  result = value == cstring"true"
+
+proc stringifyTodo(todo: Todo): cstring =
+    todo.content & "__" & (if todo.completed: "true" else: "false") & "__" & $todo.uuid
+
+proc saveTodos() =
+  setItem(&todoKey, todos.map(stringifyTodo).foldl(a & ";;" & b))
+
+
+proc findTodo(uuid: int64): Option[Todo] =
+  try:
+    some(todos.filterIt(it.uuid == uuid)[0])
+  except:
+    none(Todo)
+
+
+proc isCompleted(id: int64): bool =
+  try:
+    get(findTodo(id)).completed
+  except:
+    false
 
 proc setEntryContent(pos: int, content: cstring) =
   setItem(&pos & contentSuffix, content)
 
-proc markAsCompleted(pos: int, completed: bool) =
-  setItem(&pos & completedSuffix, &completed)
-
-proc stringifyTodo(todo: Todo): cstring =
-    todo.content & "__" & (if todo.completed: "true" else: "false") & "__" & $todo.uuid
+proc markAsCompleted(id: int64, completed: bool) =
+  todos = todos.map(proc (todo: Todo): Todo =
+    Todo(content: todo.content,
+        uuid: todo.uuid,
+        completed: if todo.uuid == id: completed else: todo.completed))
+  saveTodos()
 
 proc parseTodo(maybeTodo: cstring): Option[Todo] =
   let t = maybeTodo.split("__")
@@ -53,24 +67,15 @@ proc parseTodo(maybeTodo: cstring): Option[Todo] =
   except:
     none(Todo)
 
-
-
-proc saveTodos() =
-  setItem(&todoKey, todos.map(stringifyTodo).foldl(a & ";;" & b))
-
 proc addEntry(content: cstring, completed: bool) =
-  setEntryContent(entriesLen, content)
-  markAsCompleted(entriesLen, completed)
-  setItem(lenSuffix, &entriesLen)
   todos.insert(Todo(content: content,
                     completed: completed,
-                    uuid: entriesLen))
-  inc entriesLen
+                    uuid: getTime().toUnix()))
   saveTodos()
 
-proc updateEntry(pos: int, content: cstring, completed: bool) =
-  setEntryContent(pos, content)
-  markAsCompleted(pos, completed)
+proc updateEntry(id: int64, content: cstring, completed: bool) =
+  # setEntryContent(id, content) TODO
+  markAsCompleted(id, completed)
 
 proc onTodoEnter(ev: Event; n: VNode) =
   if n.value.strip() != "":
@@ -86,12 +91,13 @@ proc editHandler(ev: Event; n: VNode) =
 proc focusLost(ev: Event; n: VNode) = selectedEntry = -1
 
 proc editEntry(ev: Event; n: VNode) =
-  setEntryContent(n.index, n.value)
+  # setEntryContent(n.index, n.value) TODO
   selectedEntry = -1
 
-proc toggleEntry(ev: Event; n: VNode) =
-  let id = n.index
-  markAsCompleted(id, not isCompleted(id))
+proc toggleEntry(id: int64): proc(ev: Event; n: VNode) =
+  result = proc (ev: Event; n: VNode) =
+    jslog("carl_" & $id)
+    markAsCompleted(id, not isCompleted(id))
 
 proc onAllDone(ev: Event; n: VNode) =
   for i in 0..<entriesLen:
@@ -105,15 +111,15 @@ proc toClass(completed: bool): cstring =
   (if completed: cstring"completed" else: cstring(nil))
 
 proc selected(v: Filter): cstring =
-  (if filter == v: cstring"selected" else: cstring(nil))
+  (if todoFilter == v: cstring"selected" else: cstring(nil))
 
-proc createEntry(id: int; d: cstring; completed, selected: bool): VNode {.compact.} =
+proc createEntry(id: int64; d: cstring; completed, selected: bool): VNode {.compact.} =
   result = buildHtml(tr):
     li(class=toClass(completed)):
       if not selected:
         tdiv(class = "view"):
           input(class = "toggle", `type` = "checkbox", checked = toChecked(completed),
-                onclick=toggleEntry, index=id)
+                onclick=toggleEntry(id), index=id)
           label(onDblClick=editHandler, index=id):
             text d
           button(class = "destroy", index=id, onclick=removeHandler):
@@ -150,9 +156,9 @@ proc makeHeader(): VNode {.compact.} =
           onkeyupenter = onTodoEnter, setFocus)
 
 proc createDom(data: RouterData): VNode =
-  if data.hashPart == "#/": filter = all
-  elif data.hashPart == "#/completed": filter = completed
-  elif data.hashPart == "#/active": filter = active
+  if data.hashPart == "#/": todoFilter = all
+  elif data.hashPart == "#/completed": todoFilter = completed
+  elif data.hashPart == "#/active": todoFilter = active
   result = buildHtml(tdiv(class="todomvc-wrapper")):
     section(class = "todoapp"):
       makeHeader()
@@ -163,32 +169,40 @@ proc createDom(data: RouterData): VNode =
         var entriesCount = 0
         var completedCount = 0
         ul(class = "todo-list"):
-          #for i, d in pairs(entries):
-          for i in 0..entriesLen-1:
-            var d0 = getEntryContent(i)
-            var d1 = isCompleted(i)
-            if d0 != nil:
-              let b = case filter
-                      of all: true
-                      of active: not d1
-                      of completed: d1
-              if b:
-                createEntry(i, d0, d1, i == selectedEntry)
-              inc completedCount, ord(d1)
-              inc entriesCount
+          for todo in todos:
+            let b = case todoFilter
+                    of all: true
+                    of active: not todo.completed
+                    of completed: todo.completed
+            if b:
+              createEntry(todo.uuid, todo.content, todo.completed, todo.uuid == selectedEntry)
+            inc completedCount, ord(todo.completed)
+            inc entriesCount
       makeFooter(entriesCount, completedCount)
 
-if hasItem(lenSuffix):
-  entriesLen = parseInt getItem(lenSuffix)
-else:
-  entriesLen = 0
+proc filterOptionalTodos(t: Option[Todo]): bool =
+  try:
+    let _ = get(t)
+    true
+  except:
+    false
+
+type
+  MyCustomError* = object of Exception
+
+proc extractTodo(t: Option[Todo]): Todo =
+  try:
+    get(t)
+  except:
+    raise newException(MyCustomError, "How did we get here?")
 
 if hasItem(todoKey):
-  let maybeSavedValue = getItem(todoKey).split(";;")
-  let maybeTodos = maybeSavedValue.map(parseTodo)
-  let filteredTodos = filter(maybeTodos, isSome)
-  todos = filteredTodos
-  # todos = getItem(todoKey).split(";;").map(parseTodo).filter(isSome).map(get)
+  todos =
+    getItem(todoKey)
+      .split(";;")
+      .map(parseTodo)
+      .filter(filterOptionalTodos)
+      .map(extractTodo)
 else:
   todos = @[]
 
